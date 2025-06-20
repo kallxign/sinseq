@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Unit Circle Sequencer</title>
+  <style>
+    canvas { border: 1px solid #ccc; display: block; margin: 20px auto; }
+    #info, #controls, #savedPoints, #sequencer { text-align: center; margin-top: 10px; font-size: 1em; }
+    input[type="number"], select { width: 80px; font-size: 1em; text-align: right; }
+    button { margin: 5px; padding: 5px 10px; }
+  </style>
+</head>
+<body>
+
+<canvas id="unitCircle" width="400" height="400"></canvas>
+<div id="info">sin(θ): 0.000, cos(θ): 1.000</div>
+
+<div id="controls">
+  sin倍率: <input id="sinMultiplier" type="number" value="2" step="0.1">
+  cos倍率: <input id="cosMultiplier" type="number" value="3" step="0.1">
+  波形: 
+  <select id="waveform">
+    <option value="sine">sine</option>
+    <option value="triangle">triangle</option>
+    <option value="sawtooth">sawtooth</option>
+    <option value="square">square</option>
+  </select>
+  減衰(ms): <input id="decayTime" type="number" value="300" step="10">
+  ステップ数: <input id="stepCount" type="number" value="8" step="1" min="1">
+  <button onclick="saveCurrentPoint()">現在の点を保存</button>
+  テンポ (BPM): <input id="tempo" type="number" value="120" step="1">
+  <button onclick="toggleSequencer()" id="seqToggle">▶ 再生</button>
+</div>
+
+<div id="savedPoints">
+  <h3>保存された点</h3>
+  <div id="pointsList"></div>
+</div>
+
+<div id="sequencer">
+  <h3>ステップシーケンサー</h3>
+  <div id="sequencerGrid"></div>
+</div>
+
+<script>
+const canvas = document.getElementById("unitCircle");
+const ctx = canvas.getContext("2d");
+const radius = 150;
+const center = { x: canvas.width / 2, y: canvas.height / 2 };
+let angle = 0;
+let dragging = false;
+
+let audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const baseFreq = 432;
+const savedPoints = [];
+
+let dragOsc1 = null, dragOsc2 = null, dragOsc3 = null, dragGain = null;
+let isSequencerRunning = false;
+let seqInterval;
+
+function drawCircle() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  const x = center.x + radius * Math.cos(angle);
+  const y = center.y - radius * Math.sin(angle);
+  ctx.beginPath();
+  ctx.arc(x, y, 8, 0, Math.PI * 2);
+  ctx.fillStyle = "red";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(center.x, center.y);
+  ctx.lineTo(x, y);
+  ctx.strokeStyle = "#888";
+  ctx.stroke();
+}
+
+function updateInfo() {
+  document.getElementById("info").textContent = `sin(θ): ${Math.sin(angle).toFixed(3)}, cos(θ): ${Math.cos(angle).toFixed(3)}`;
+}
+
+function getMultipliers() {
+  return {
+    sinMul: parseFloat(document.getElementById("sinMultiplier").value) || 1,
+    cosMul: parseFloat(document.getElementById("cosMultiplier").value) || 1
+  };
+}
+
+function startDragOscillators() {
+  const { sinMul, cosMul } = getMultipliers();
+  dragGain = audioCtx.createGain();
+  dragGain.gain.value = 0.2;
+  dragGain.connect(audioCtx.destination);
+  const waveform = document.getElementById("waveform").value;
+  dragOsc1 = audioCtx.createOscillator();
+  dragOsc2 = audioCtx.createOscillator();
+  dragOsc3 = audioCtx.createOscillator();
+  [dragOsc1, dragOsc2, dragOsc3].forEach(osc => {
+    osc.type = waveform;
+    osc.connect(dragGain);
+    osc.start();
+  });
+  dragOsc1.frequency.value = baseFreq;
+  updateDragFrequencies();
+}
+
+function updateDragFrequencies() {
+  const { sinMul, cosMul } = getMultipliers();
+  if (dragOsc2 && dragOsc3) {
+    dragOsc2.frequency.value = Math.abs(Math.sin(angle)) * baseFreq * sinMul;
+    dragOsc3.frequency.value = Math.abs(Math.cos(angle)) * baseFreq * cosMul;
+  }
+}
+
+function stopDragOscillators() {
+  [dragOsc1, dragOsc2, dragOsc3].forEach(o => o && o.stop());
+  dragOsc1 = dragOsc2 = dragOsc3 = null;
+  dragGain && dragGain.disconnect();
+  dragGain = null;
+}
+
+function saveCurrentPoint() {
+  const id = `r${savedPoints.length + 1}`;
+  const { sinMul, cosMul } = getMultipliers();
+  const waveform = document.getElementById("waveform").value;
+  const decay = parseFloat(document.getElementById("decayTime").value) || 300;
+  const stepCount = parseInt(document.getElementById("stepCount").value) || 8;
+  savedPoints.push({
+    id,
+    theta: angle,
+    sinFreq: Math.abs(Math.sin(angle)) * baseFreq * sinMul,
+    cosFreq: Math.abs(Math.cos(angle)) * baseFreq * cosMul,
+    waveform,
+    decay,
+    stepCount,
+    steps: Array(stepCount).fill(false),
+    currentStep: 0
+  });
+  renderSavedPoints();
+  renderSequencer();
+}
+
+function playPoint(point) {
+  const now = audioCtx.currentTime;
+  const decaySec = point.decay / 1000;
+  const gainNode = audioCtx.createGain();
+  gainNode.gain.setValueAtTime(0.2, now);
+  gainNode.gain.exponentialRampToValueAtTime(0.001, now + decaySec);
+  gainNode.connect(audioCtx.destination);
+  [baseFreq, point.sinFreq, point.cosFreq].forEach(freq => {
+    const osc = audioCtx.createOscillator();
+    osc.type = point.waveform;
+    osc.frequency.value = freq;
+    osc.connect(gainNode);
+    osc.start(now);
+    osc.stop(now + decaySec);
+  });
+}
+
+function toggleSequencer() {
+  isSequencerRunning = !isSequencerRunning;
+  document.getElementById("seqToggle").textContent = isSequencerRunning ? "⏸ 停止" : "▶ 再生";
+  if (isSequencerRunning) {
+    const tempo = parseFloat(document.getElementById("tempo").value) || 120;
+    const interval = 60000 / tempo / 4;
+    seqInterval = setInterval(() => {
+      savedPoints.forEach(p => {
+        if (p.steps[p.currentStep]) playPoint(p);
+        p.currentStep = (p.currentStep + 1) % p.stepCount;
+      });
+    }, interval);
+  } else {
+    clearInterval(seqInterval);
+  }
+}
+
+function renderSavedPoints() {
+  const list = document.getElementById("pointsList");
+  list.innerHTML = "";
+  savedPoints.forEach(p => {
+    list.innerHTML += `<div><strong>${p.id}</strong> θ=${p.theta.toFixed(3)}, 波形:${p.waveform}, 減衰:${p.decay}ms, ステップ:${p.stepCount}</div>`;
+  });
+}
+
+function renderSequencer() {
+  const grid = document.getElementById("sequencerGrid");
+  grid.innerHTML = "";
+  savedPoints.forEach(point => {
+    const container = document.createElement("div");
+    container.style.position = "relative";
+    container.style.margin = "10px auto";
+    container.style.width = "400px";
+    container.style.height = "30px";
+    container.style.border = "1px solid #999";
+    container.style.background = "#f4f4f4";
+    container.title = point.id;
+    const stepWidth = 400 / point.stepCount;
+    for (let i = 0; i < point.stepCount; i++) {
+      const step = document.createElement("div");
+      step.style.position = "absolute";
+      step.style.left = `${i * stepWidth}px`;
+      step.style.top = "0";
+      step.style.width = `${stepWidth - 2}px`;
+      step.style.height = "100%";
+      step.style.borderRight = "1px solid #ccc";
+      step.style.boxSizing = "border-box";
+      step.style.background = point.steps[i] ? "limegreen" : "white";
+      step.style.cursor = "pointer";
+      step.onclick = () => {
+        point.steps[i] = !point.steps[i];
+        renderSequencer();
+      };
+      container.appendChild(step);
+    }
+    const label = document.createElement("div");
+    label.textContent = `${point.id} (${point.stepCount}ステップ)`;
+    label.style.textAlign = "left";
+    label.style.fontSize = "0.9em";
+    label.style.marginTop = "-5px";
+    grid.appendChild(label);
+    grid.appendChild(container);
+  });
+}
+
+canvas.addEventListener("mousedown", e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const x = center.x + radius * Math.cos(angle);
+  const y = center.y - radius * Math.sin(angle);
+  if ((mx - x) ** 2 + (my - y) ** 2 <= 64) {
+    dragging = true;
+    startDragOscillators();
+  }
+});
+
+canvas.addEventListener("mousemove", e => {
+  if (!dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const dx = e.clientX - rect.left - center.x;
+  const dy = center.y - (e.clientY - rect.top);
+  angle = Math.atan2(dy, dx);
+  drawCircle();
+  updateInfo();
+  updateDragFrequencies();
+});
+
+canvas.addEventListener("mouseup", () => dragging && (dragging = false, stopDragOscillators()));
+canvas.addEventListener("mouseleave", () => dragging && (dragging = false, stopDragOscillators()));
+
+drawCircle();
+updateInfo();
+</script>
+</body>
+</html>
