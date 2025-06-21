@@ -127,6 +127,7 @@ function saveCurrentPoint() {
   const decay = parseFloat(document.getElementById("decayTime").value) || 300;
   const stepCount = parseInt(document.getElementById("stepCount").value) || 8;
   savedPoints.push({
+    solo: false,
     id,
     theta: angle,
     sinFreq: Math.abs(Math.sin(angle)) * baseFreq * sinMul,
@@ -165,8 +166,10 @@ function toggleSequencer() {
     const tempo = parseFloat(document.getElementById("tempo").value) || 120;
     const interval = 60000 / tempo / 4;
     seqInterval = setInterval(() => {
+      const soloTarget = savedPoints.find(p => p.solo);
       savedPoints.forEach(p => {
-        if (p.steps[p.currentStep]) playPoint(p);
+        const shouldPlay = !soloTarget || p === soloTarget;
+        if (shouldPlay && p.steps[p.currentStep]) playPoint(p);
         p.currentStep = (p.currentStep + 1) % p.stepCount;
       });
     }, interval);
@@ -186,15 +189,34 @@ function renderSavedPoints() {
 function renderSequencer() {
   const grid = document.getElementById("sequencerGrid");
   grid.innerHTML = "";
-  savedPoints.forEach(point => {
+  savedPoints.forEach((point, index) => {
+    const wrapper = document.createElement("div");
+    wrapper.style.display = "flex";
+    wrapper.style.alignItems = "center";
+    wrapper.style.justifyContent = "center";
+    wrapper.style.margin = "10px auto";
+
+    const soloBtn = document.createElement("button");
+    soloBtn.textContent = "🎧";
+    soloBtn.title = `Solo ${point.id}`;
+    soloBtn.onmousedown = () => point.solo = true;
+    soloBtn.onmouseup = () => point.solo = false;
+    soloBtn.onmouseleave = () => point.solo = false;
+
+    const label = document.createElement("div");
+    label.textContent = `${point.id} (${point.stepCount}ステップ)`;
+    label.style.textAlign = "left";
+    label.style.fontSize = "0.9em";
+    label.style.margin = "0 8px";
+
     const container = document.createElement("div");
     container.style.position = "relative";
-    container.style.margin = "10px auto";
     container.style.width = "400px";
     container.style.height = "30px";
     container.style.border = "1px solid #999";
     container.style.background = "#f4f4f4";
     container.title = point.id;
+
     const stepWidth = 400 / point.stepCount;
     for (let i = 0; i < point.stepCount; i++) {
       const step = document.createElement("div");
@@ -213,13 +235,11 @@ function renderSequencer() {
       };
       container.appendChild(step);
     }
-    const label = document.createElement("div");
-    label.textContent = `${point.id} (${point.stepCount}ステップ)`;
-    label.style.textAlign = "left";
-    label.style.fontSize = "0.9em";
-    label.style.marginTop = "-5px";
-    grid.appendChild(label);
-    grid.appendChild(container);
+
+    wrapper.appendChild(soloBtn);
+    wrapper.appendChild(label);
+    wrapper.appendChild(container);
+    grid.appendChild(wrapper);
   });
 }
 
